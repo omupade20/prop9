@@ -79,7 +79,7 @@ def detect_market_regime(
     lows: List[float],
     closes: List[float],
     index_regime: Optional["MarketRegime"] = None,
-    min_bars: int = 30
+    min_bars: int = 25
 ) -> MarketRegime:
     """
     AUTHORITATIVE Market Regime Detector.
@@ -153,8 +153,8 @@ def detect_market_regime(
         )
 
     # TRENDING
-    if adx >= 25:
-        strength = cap(6.5 + (adx - 25) * 0.15)
+    if adx >= 22:
+        strength = cap(6.5 + (adx - 22) * 0.15)
         return MarketRegime(
             state="TRENDING",
             mode="TREND_DAY",

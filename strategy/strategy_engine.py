@@ -12,12 +12,16 @@ from strategy.mtf_context import analyze_mtf
 
 class StrategyEngine:
     """
-    AUTHORITATIVE Strategy Engine
+    AUTHORITATIVE Strategy Engine (UPDATED FOR 5m BASE SYSTEM)
 
     Responsibilities:
     - Enforce hierarchy (MTF → Regime → HTF → Breakout)
     - Block bad trades early
     - Call decision engine ONLY for valid candidates
+
+    NEW STRUCTURE:
+    - Base bars = 5-minute
+    - MTF layers = 15m and 30m
     """
 
     def __init__(self, scanner, vwap_calculators):
@@ -26,6 +30,7 @@ class StrategyEngine:
         self.mtf_builder = MTFBuilder()
 
     def evaluate(self, inst_key: str, ltp: float):
+
         # ==================================================
         # 1️⃣ DATA SUFFICIENCY
         # ==================================================
@@ -43,7 +48,7 @@ class StrategyEngine:
             return None
 
         # ==================================================
-        # 2️⃣ BUILD MTF CANDLES (BAR-CLOSE ONLY)
+        # 2️⃣ BUILD MTF CANDLES FROM 5m BASE
         # ==================================================
 
         last_bar = self.scanner.get_last_n_bars(inst_key, 1)
@@ -51,6 +56,8 @@ class StrategyEngine:
             return None
 
         bar = last_bar[0]
+
+        # Feed 5m bar to MTF builder
         self.mtf_builder.update(
             inst_key,
             bar["time"],
@@ -61,16 +68,18 @@ class StrategyEngine:
             bar["volume"]
         )
 
-        candle_5m = self.mtf_builder.get_latest_5m(inst_key)
-        hist_5m = self.mtf_builder.get_tf_history(inst_key, minutes=5, lookback=3)
+        # -------- NEW MTF LOGIC --------
         candle_15m = self.mtf_builder.get_latest_15m(inst_key)
         hist_15m = self.mtf_builder.get_tf_history(inst_key, minutes=15, lookback=3)
 
+        candle_30m = self.mtf_builder.get_latest_30m(inst_key)
+        hist_30m = self.mtf_builder.get_tf_history(inst_key, minutes=30, lookback=3)
+
         mtf_ctx = analyze_mtf(
-            candle_5m,
             candle_15m,
-            history_5m=hist_5m,
-            history_15m=hist_15m
+            candle_30m,
+            history_15m=hist_15m,
+            history_30m=hist_30m
         )
 
         # 🔒 HARD MTF GATE
@@ -129,7 +138,7 @@ class StrategyEngine:
         if not breakout:
             return None
 
-        # Direction must align with MTF
+        # Direction must align with NEW MTF
         if breakout["direction"] == "LONG" and mtf_ctx.direction != "BULLISH":
             return None
 

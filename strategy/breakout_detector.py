@@ -43,9 +43,9 @@ def breakout_signal(
     high_prices: Optional[list[float]] = None,
     low_prices: Optional[list[float]] = None,
     close_prices: Optional[list[float]] = None,
-    breakout_pct: float = 0.0015,
-    vol_threshold: float = 1.2,
-    atr_multiplier: float = 0.8
+    breakout_pct: float = 0.003,
+    vol_threshold: float = 1.4,
+    atr_multiplier: float = 1
 ) -> Optional[Dict]:
     """
     AUTHORITATIVE Breakout / Intent Detector.
@@ -56,7 +56,7 @@ def breakout_signal(
     - DO NOT decide direction by opinion
     """
 
-    if len(prices) < 30:
+    if len(prices) < 25:
         return None
 
     last_price = prices[-1]

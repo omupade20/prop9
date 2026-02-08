@@ -87,7 +87,7 @@ def analyze_volatility(
     # ----------------------
     # 1️⃣ Contracting / Noise
     # ----------------------
-    if move_pct_atr < 0.6:
+    if move_pct_atr < 0.75:
         return VolatilityContext(
             state="CONTRACTING",
             score=-0.6,
@@ -99,7 +99,7 @@ def analyze_volatility(
     # ----------------------
     # 2️⃣ Building Phase
     # ----------------------
-    if move_pct_atr < 1.1:
+    if move_pct_atr < 1.2:
         return VolatilityContext(
             state="BUILDING",
             score=0.2,

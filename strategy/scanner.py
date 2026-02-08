@@ -1,10 +1,10 @@
 # strategy/scanner.py
 """
-Hardened MarketScanner (production-ready).
-- keeps rolling 1-minute OHLCV bars per instrument (dict-of-deques)
-- supports tick aggregation, direct OHLC bar ingestion (append_ohlc_bar)
+Hardened MarketScanner (production-ready) – 5 MINUTE BASED VERSION
+- keeps rolling 5-minute OHLCV bars per instrument
+- supports tick aggregation into 5m candles
 - snapshot persistence and resume
-- on_bar_close callbacks so MTF/strategy can run immediately when a bar closes
+- on_bar_close callbacks so MTF/strategy can run immediately when a 5m bar closes
 - alert throttling helpers (last_alert_time, dedupe)
 - basic health checks and replay utilities
 - thread-safe for use from websocket threads
@@ -15,12 +15,13 @@ import os
 import threading
 import time
 from collections import deque, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Callable, Optional
 
-DEFAULT_MAX_LEN = 600  # keep 600 1-minute bars (~10 hours)
+# Now storing 600 five-minute bars (~50 trading hours)
+DEFAULT_MAX_LEN = 600
 
-ISOFMT = "%Y-%m-%dT%H:%M:%S"  # simple ISO without tz
+ISOFMT = "%Y-%m-%dT%H:%M:%S"
 
 
 def _now_iso():
@@ -32,28 +33,20 @@ class MarketScanner:
         self.max_len = max_len
         self.snapshot_path = snapshot_path
 
-        # core storage: per-symbol deque of bar dicts
-        # bar dict: {"time": "YYYY-MM-DDTHH:MM:SS", "open":, "high":, "low":, "close":, "volume":}
         self._bars: Dict[str, deque] = {}
         self._locks: Dict[str, threading.Lock] = defaultdict(threading.Lock)
         self._global_lock = threading.Lock()
 
-        # quick-access caches (kept in sync) to preserve compatibility with your old getters
-        # These will be derived from self._bars on request to avoid duplication.
-        # last_alert_time and dedupe state
         self.last_alert_time: Dict[str, float] = {}
-        self._dedupe_map: Dict[str, Dict[str, float]] = defaultdict(dict)  # inst -> {direction: ts}
-        self._paused_until: Dict[str, float] = {}  # inst -> timestamp (epoch) until which instrument is paused
+        self._dedupe_map: Dict[str, Dict[str, float]] = defaultdict(dict)
+        self._paused_until: Dict[str, float] = {}
 
-        # callbacks that are called when a 1-minute bar is appended / closed
         self._on_bar_close_callbacks: List[Callable[[str, dict], None]] = []
 
-        # metrics
         self.bars_received = 0
         self.bars_closed = 0
         self.replay_mode = False
 
-        # ensure snapshot directory exists when saving
         if self.snapshot_path:
             os.makedirs(os.path.dirname(self.snapshot_path), exist_ok=True)
 
@@ -66,8 +59,17 @@ class MarketScanner:
                 self._bars[inst] = deque(maxlen=self.max_len)
 
     def _lock_for(self, inst: str):
-        # simple per-instrument lock object
         return self._locks[inst]
+
+    # ------------------------------------------------------------
+    # 5-MINUTE BUCKETING HELPERS
+    # ------------------------------------------------------------
+    def _round_to_5min(self, ts: datetime) -> datetime:
+        """
+        Round timestamp DOWN to nearest 5-minute boundary.
+        """
+        minute = (ts.minute // 5) * 5
+        return ts.replace(minute=minute, second=0, microsecond=0)
 
     # ---------------------
     # Append / ingestion
@@ -83,8 +85,7 @@ class MarketScanner:
         volume: float
     ):
         """
-        Ingest a completed 1-minute bar. Triggers on_bar_close callbacks.
-        Safe to call from websocket thread.
+        Ingest a completed 5-minute bar. Triggers on_bar_close callbacks.
         """
         self._ensure_inst(inst)
         with self._lock_for(inst):
@@ -99,36 +100,38 @@ class MarketScanner:
             self._bars[inst].append(bar)
             self.bars_closed += 1
 
-        # call callbacks outside lock to avoid deadlocks
         for cb in list(self._on_bar_close_callbacks):
             try:
                 cb(inst, bar)
             except Exception:
-                # callbacks should be robust; do not raise
                 pass
 
         return bar
 
     def append_tick(self, inst: str, timestamp: datetime, price: float, volume: float):
         """
-        Aggregate a tick into the current minute bar.
-        This method builds the active 1-minute bar from ticks when the feed is tick-level.
-        If you already receive 1-minute OHLC, prefer append_ohlc_bar.
+        Aggregate ticks into a 5-minute bar instead of 1-minute.
         """
         self._ensure_inst(inst)
-        ts_min = timestamp.replace(second=0, microsecond=0)
-        time_iso = ts_min.strftime(ISOFMT)
+
+        ts_5m = self._round_to_5min(timestamp)
+        time_iso = ts_5m.strftime(ISOFMT)
 
         with self._lock_for(inst):
             bars = self._bars[inst]
+
             if not bars or bars[-1]["time"] != time_iso:
-                # start a new bar
-                bar = {"time": time_iso, "open": price, "high": price, "low": price, "close": price, "volume": volume}
+                bar = {
+                    "time": time_iso,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": volume
+                }
                 bars.append(bar)
                 self.bars_received += 1
-                # We do NOT trigger callbacks on first tick of bar; only when the bar is closed via append_ohlc_bar
             else:
-                # update existing in-progress bar
                 bar = bars[-1]
                 bar["high"] = max(bar["high"], price)
                 bar["low"] = min(bar["low"], price)
@@ -147,28 +150,23 @@ class MarketScanner:
         time_iso: Optional[str] = None
     ):
         """
-        Backwards-compatible method matching your old interface.
-        Treat this as a direct append of a 1-minute bar when time_iso provided,
-        otherwise treat as a tick aggregator using current time.
+        Backwards-compatible method.
+        Treat as direct 5-minute bar append when time_iso provided,
+        otherwise aggregate ticks into 5-minute buckets.
         """
         if time_iso:
             self.append_ohlc_bar(instrument, time_iso, price, high, low, close, volume)
         else:
-            # if no timestamp passed, assume current minute
             self.append_tick(instrument, datetime.now(), price, volume)
 
     # ---------------------
     # Accessors & getters
     # ---------------------
     def get_last_n_bars(self, inst: str, n: int) -> List[dict]:
-        """
-        Return last n bars as list (oldest -> newest).
-        """
         if inst not in self._bars:
             return []
         with self._lock_for(inst):
-            bars = list(self._bars[inst])[-n:]
-            return bars
+            return list(self._bars[inst])[-n:]
 
     def get_last_bar(self, inst: str) -> Optional[dict]:
         if inst not in self._bars or not self._bars[inst]:
@@ -191,23 +189,16 @@ class MarketScanner:
     def get_volumes(self, inst: str) -> List[float]:
         return [b["volume"] for b in self.get_last_n_bars(inst, self.max_len)]
 
-    def get_last_n_closes(self, inst: str, n: int) -> List[float]:
-        return [b["close"] for b in self.get_last_n_bars(inst, n)]
-
-    def has_enough_data(self, inst: str, min_bars: int = 30) -> bool:
+    def has_enough_data(self, inst: str, min_bars: int = 25) -> bool:
         return (inst in self._bars and len(self._bars[inst]) >= min_bars)
 
     def active_instruments(self) -> List[str]:
         return list(self._bars.keys())
 
     # ---------------------
-    # Callbacks / events
+    # Callbacks
     # ---------------------
     def register_on_bar_close(self, cb: Callable[[str, dict], None]):
-        """
-        Register a callback to be called when a 1-minute bar is appended via append_ohlc_bar.
-        Callback signature: func(inst_key, bar_dict)
-        """
         if cb not in self._on_bar_close_callbacks:
             self._on_bar_close_callbacks.append(cb)
 
@@ -216,12 +207,9 @@ class MarketScanner:
             self._on_bar_close_callbacks.remove(cb)
 
     # ---------------------
-    # Alert throttling / dedupe helpers
+    # Alert helpers
     # ---------------------
-    def can_emit_alert(self, inst: str, cooldown_seconds: int = 600) -> bool:
-        """
-        Return True if we are allowed to emit a new alert for `inst` (respect cooldown).
-        """
+    def can_emit_alert(self, inst: str, cooldown_seconds: int = 900) -> bool:
         now_ts = time.time()
         paused_until = self._paused_until.get(inst)
         if paused_until and now_ts < paused_until:
@@ -235,121 +223,13 @@ class MarketScanner:
     def mark_alert_emitted(self, inst: str):
         self.last_alert_time[inst] = time.time()
 
-    def dedupe_alert(self, inst: str, direction: str, window_seconds: int = 600) -> bool:
-        """
-        Returns True if alert should be suppressed because same direction was emitted within window_seconds.
-        If it returns False, we record this emission (caller should then send alert and optionally call mark_alert_emitted).
-        """
-        now_ts = time.time()
-        last_for_dir = self._dedupe_map[inst].get(direction)
-        if last_for_dir and (now_ts - last_for_dir) < window_seconds:
-            return True
-        # record and allow
-        self._dedupe_map[inst][direction] = now_ts
-        return False
-
-    def mark_instrument_paused(self, inst: str, until_ts: float):
-        """
-        Pause instrument until epoch timestamp `until_ts`.
-        """
-        self._paused_until[inst] = until_ts
-
-    # ---------------------
-    # Persistence / snapshot
-    # ---------------------
-    def save_snapshot(self, path: Optional[str] = None):
-        """
-        Save minimal scanner state: bars (last N), last_alert_time, dedupe timestamps, paused_until.
-        """
-        path = path or self.snapshot_path
-        if not path:
-            raise ValueError("No snapshot path configured")
-
-        data = {
-            "bars": {},
-            "last_alert_time": self.last_alert_time,
-            "dedupe_map": self._dedupe_map,
-            "paused_until": self._paused_until,
-            "timestamp": _now_iso()
-        }
-
-        with self._global_lock:
-            for inst, dq in self._bars.items():
-                data["bars"][inst] = list(dq)
-
-        tmp = f"{path}.tmp"
-        with open(tmp, "w") as f:
-            json.dump(data, f)
-        os.replace(tmp, path)
-
-    def load_snapshot(self, path: Optional[str] = None):
-        path = path or self.snapshot_path
-        if not path or not os.path.exists(path):
-            return False
-        with open(path, "r") as f:
-            data = json.load(f)
-
-        with self._global_lock:
-            for inst, bars in data.get("bars", {}).items():
-                dq = deque(bars, maxlen=self.max_len)
-                self._bars[inst] = dq
-            self.last_alert_time = data.get("last_alert_time", {})
-            self._dedupe_map = defaultdict(dict, data.get("dedupe_map", {}))
-            self._paused_until = data.get("paused_until", {})
-
-        return True
-
-    # ---------------------
-    # Replay / testing utilities
-    # ---------------------
-    def replay_bars(self, inst: str, bars: List[dict], call_callbacks: bool = False):
-        """
-        Replay a list of bar dicts (oldest->newest). Useful for unit tests/backtests.
-        """
-        self.replay_mode = True
-        self._ensure_inst(inst)
-        with self._lock_for(inst):
-            for bar in bars:
-                # minimal validation
-                if not all(k in bar for k in ("time", "open", "high", "low", "close", "volume")):
-                    continue
-                self._bars[inst].append(bar)
-                self.bars_closed += 1
-                if call_callbacks:
-                    for cb in list(self._on_bar_close_callbacks):
-                        try:
-                            cb(inst, bar)
-                        except Exception:
-                            pass
-        self.replay_mode = False
-
-    def validate_bar_sequence(self, inst: str, max_gap_seconds: int = 90) -> List[dict]:
-        """
-        Return a list of gaps (as dicts) where time difference between consecutive bars > max_gap_seconds.
-        """
-        gaps = []
-        bars = self.get_last_n_bars(inst, self.max_len)
-        prev_ts = None
-        for b in bars:
-            try:
-                ts = datetime.strptime(b["time"], ISOFMT)
-            except Exception:
-                continue
-            if prev_ts and (ts - prev_ts).total_seconds() > max_gap_seconds:
-                gaps.append({"from": prev_ts.strftime(ISOFMT), "to": ts.strftime(ISOFMT)})
-            prev_ts = ts
-        return gaps
-
     # ---------------------
     # Health & introspection
     # ---------------------
     def health_check(self) -> dict:
-        """
-        Basic scanner health summary.
-        """
         now_ts = datetime.now()
-        busy = sum(1 for k in self._bars if self._bars[k])
         last_bar_diff = {}
+
         for k, dq in self._bars.items():
             if dq:
                 try:
@@ -362,27 +242,5 @@ class MarketScanner:
             "instruments_tracked": len(self._bars),
             "bars_received": self.bars_received,
             "bars_closed": self.bars_closed,
-            "recent_busy": busy,
             "last_bar_age_sample": dict(list(last_bar_diff.items())[:10])
         }
-
-    # ---------------------
-    # Utilities
-    # ---------------------
-    def get_bars_since(self, inst: str, since_iso: str) -> List[dict]:
-        """
-        Return bars newer than since_iso (inclusive).
-        """
-        out = []
-        try:
-            since_dt = datetime.strptime(since_iso, ISOFMT)
-        except Exception:
-            return out
-        for b in self.get_last_n_bars(inst, self.max_len):
-            try:
-                ts = datetime.strptime(b["time"], ISOFMT)
-                if ts >= since_dt:
-                    out.append(b)
-            except Exception:
-                continue
-        return out

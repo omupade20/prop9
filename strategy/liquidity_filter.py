@@ -24,7 +24,7 @@ class LiquidityContext:
 def analyze_liquidity(
     volume_history: List[float],
     min_avg_volume: int = 250_000,
-    lookback: int = 30
+    lookback: int = 12
 ) -> LiquidityContext:
     """
     Intraday liquidity analysis for MIS / cash segment.

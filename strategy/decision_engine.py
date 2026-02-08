@@ -149,14 +149,14 @@ def final_trade_decision(
     nearest = get_nearest_sr(closes[-1], sr_levels)
     sr_score = sr_location_score(closes[-1], nearest, direction)
     components["sr"] = sr_score
-    score += sr_score * 0.7
+    score += sr_score * 0.9
 
     # Momentum sanity
     rsi = relative_strength_index(prices, 14)
     if rsi:
-        if direction == "LONG" and rsi < 45:
+        if direction == "LONG" and rsi < 40:
             score -= 0.5
-        elif direction == "SHORT" and rsi > 55:
+        elif direction == "SHORT" and rsi > 60:
             score -= 0.5
 
     # ==================================================

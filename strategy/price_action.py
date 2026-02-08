@@ -29,8 +29,8 @@ def detect_pullback_in_trend(
     prices: List[float],
     ema_short: Optional[float] = None,
     ema_long: Optional[float] = None,
-    lookback: int = 6,
-    max_depth_pct: float = 0.006
+    lookback: int = 4,
+    max_depth_pct: float = 0.001
 ) -> Optional[Dict]:
     """
     Detects a shallow pullback inside a trend.
