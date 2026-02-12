@@ -16,7 +16,7 @@ def analyze_volume(
     volume_history: List[float],
     close_prices: Optional[List[float]] = None,
     lookback: int = 12,
-    rising_bars: int = 3
+    rising_bars: int = 2
 ) -> VolumeContext:
     """
     Institutional volume analysis producing:
@@ -52,10 +52,10 @@ def analyze_volume(
         score = 2.0
     elif rel >= 1.4:
         strength = "MODERATE"
-        score = 1.2
+        score = 0.9
     elif rel >= 0.95:
         strength = "WEAK"
-        score = 0.4
+        score = 0.3
     else:
         strength = "NONE"
         score = -0.5
