@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Dict, List, Callable, Optional
 
 # Now storing 600 five-minute bars (~50 trading hours)
-DEFAULT_MAX_LEN = 600
+DEFAULT_MAX_LEN = 400
 
 ISOFMT = "%Y-%m-%dT%H:%M:%S"
 
@@ -209,7 +209,7 @@ class MarketScanner:
     # ---------------------
     # Alert helpers
     # ---------------------
-    def can_emit_alert(self, inst: str, cooldown_seconds: int = 900) -> bool:
+    def can_emit_alert(self, inst: str, cooldown_seconds: int = 1800) -> bool:
         now_ts = time.time()
         paused_until = self._paused_until.get(inst)
         if paused_until and now_ts < paused_until:
