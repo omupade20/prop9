@@ -36,7 +36,7 @@ def _is_bearish(candle: dict) -> bool:
 def _persistence_score(history: List[dict]) -> float:
     """
     Persistence bonus based on last 3 candles.
-    Returns 0.0 / 0.3 / 0.6
+    Returns 0.0 / 0.2 / 0.4
     """
     if not history or len(history) < 2:
         return 0.0
@@ -105,7 +105,7 @@ def analyze_mtf(
         if (_is_bullish(candle_15m) and _is_bearish(candle_30m)) or \
            (_is_bearish(candle_15m) and _is_bullish(candle_30m)):
             conflict = True
-            score *= 0.5
+            score *= 0.7
             comments.append("15m/30m conflict")
 
     # ---------------------
@@ -141,9 +141,9 @@ def analyze_mtf(
     # Confidence Buckets
     # ---------------------
 
-    if strength >= 1.4 and not conflict:
+    if strength >= 1.1 and not conflict:
         confidence = "HIGH"
-    elif strength >= 0.8:
+    elif strength >= 0.6:
         confidence = "MEDIUM"
     else:
         confidence = "LOW"
