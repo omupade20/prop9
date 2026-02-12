@@ -142,8 +142,8 @@ def detect_market_regime(
     # =====================
 
     # EARLY TREND
-    if adx >= 15 and recent_range > prev_range * 1.3:
-        strength = cap(4.5 + (adx - 15) * 0.2)
+    if adx >= 13 and recent_range > prev_range * 1.3:
+        strength = cap(4.5 + (adx - 13) * 0.2)
         return MarketRegime(
             state="EARLY_TREND",
             mode="TREND_DAY",
@@ -153,8 +153,8 @@ def detect_market_regime(
         )
 
     # TRENDING
-    if adx >= 22:
-        strength = cap(6.5 + (adx - 22) * 0.15)
+    if adx >= 18:
+        strength = cap(6.5 + (adx - 18) * 0.15)
         return MarketRegime(
             state="TRENDING",
             mode="TREND_DAY",
@@ -164,7 +164,7 @@ def detect_market_regime(
         )
 
     # COMPRESSION
-    if recent_range < prev_range * 0.7:
+    if recent_range < prev_range * 0.75:
         strength = cap(2.5 + (prev_range - recent_range) / (prev_range + 1e-9))
         return MarketRegime(
             state="COMPRESSION",
@@ -175,8 +175,8 @@ def detect_market_regime(
         )
 
     # EXHAUSTION
-    if adx > 28 and recent_range < prev_range * 0.85 and vol_norm < 0.008:
-        strength = cap(3.5 + (adx - 28) * 0.1)
+    if adx > 30 and recent_range < prev_range * 0.85 and vol_norm < 0.008:
+        strength = cap(3.5 + (adx - 30) * 0.1)
         return MarketRegime(
             state="EXHAUSTION",
             mode="RANGE_DAY",
