@@ -22,9 +22,9 @@ class HTFBias:
 def get_htf_bias(
     prices: List[float],
     vwap_value: Optional[float] = None,
-    short_period: int = 20,
-    long_period: int = 50,
-    vwap_tolerance: float = 0.006
+    short_period: int = 14,
+    long_period: int = 34,
+    vwap_tolerance: float = 0.008
 ) -> HTFBias:
     """
     Compute an HTF directional bias (direction + confidence).
@@ -116,7 +116,7 @@ def get_htf_bias(
 
     # 5) final clamp & label
     # keep within [0.5, 10.0] — avoid zero so downstream logic has room to interpret
-    strength = max(0.5, min(round(strength, 2), 10.0))
+    strength = max(0.8, min(round(strength, 2), 10.0))
 
     if direction == "BULLISH":
         label = "BULLISH_STRONG" if strength >= 6.0 else "BULLISH_WEAK"
