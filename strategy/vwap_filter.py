@@ -34,7 +34,7 @@ class VWAPCalculator:
       - get_context(price): returns VWAPContext with score
     """
 
-    def __init__(self, window: Optional[int] = None, slope_window: int = 5):
+    def __init__(self, window: Optional[int] = None, slope_window: int = 3):
         self.window = window
         self.slope_window = slope_window
 
@@ -135,9 +135,9 @@ class VWAPCalculator:
             slope = 0.0
 
         # classify acceptance zone
-        if distance_pct > 0.2:  # price > 0.2% above VWAP
+        if distance_pct > 0.3:  # price > 0.2% above VWAP
             acceptance = "ABOVE"
-        elif distance_pct < -0.2:
+        elif distance_pct < -0.3:
             acceptance = "BELOW"
         else:
             acceptance = "NEAR"
@@ -158,11 +158,11 @@ class VWAPCalculator:
         else:
             pressure = "NEUTRAL"
             # slight penalty when price is above but slope falling, or below but slope rising
-            score = -0.5
+            score = -0.3
             comment = "VWAP uncertainty or weak pressure"
 
         # clamp score
-        score = max(min(score, 2.0), -2.0)
+        score = max(min(score, 1.2), -1.2)
 
         return VWAPContext(
             vwap=round(vwap, 6),
