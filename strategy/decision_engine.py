@@ -17,16 +17,16 @@ from strategy.vwap_filter import VWAPContext
 
 @dataclass
 class DecisionResult:
-    state: str                 # IGNORE | PREPARE_LONG | PREPARE_SHORT | EXECUTE_LONG | EXECUTE_SHORT
-    score: float               # 0 – 10
+    state: str
+    score: float
     direction: Optional[str]
     components: Dict[str, float]
     reason: str
 
 
-# =========================
-# NEW PULLBACK BASED ENGINE
-# =========================
+# =========================================================
+# PRACTICAL PULLBACK DECISION ENGINE (RESTRUCTURED)
+# =========================================================
 
 def final_trade_decision(
     inst_key: str,
@@ -44,9 +44,9 @@ def final_trade_decision(
     components: Dict[str, float] = {}
     score = 0.0
 
-    # ==================================================
-    # 1️⃣ STRUCTURE GATE (MOST IMPORTANT)
-    # ==================================================
+    # --------------------------------------------------
+    # 1) Base Structure – must have pullback signal
+    # --------------------------------------------------
 
     if not pullback_signal:
         return DecisionResult("IGNORE", 0.0, None, {}, "no pullback setup")
@@ -54,103 +54,121 @@ def final_trade_decision(
     direction = pullback_signal["direction"]
     signal_type = pullback_signal["signal"]
 
-    # Potential setups only PREPARE
-    if signal_type == "POTENTIAL":
-        components["structure"] = 1.5
-        return DecisionResult(
-            state=f"PREPARE_{direction}",
-            score=1.5,
-            direction=direction,
-            components=components,
-            reason="potential pullback"
-        )
+    # CONFIRMED pullbacks get base priority
+    if signal_type == "CONFIRMED":
+        components["structure"] = 3.0
+        score += 3.0
+    else:
+        components["structure"] = 1.8
+        score += 1.8
 
-    # CONFIRMED pullback gets structural priority
-    components["structure"] = 3.0
-    score += 3.0
+    # --------------------------------------------------
+    # 2) Higher Timeframe Alignment (SOFTENED)
+    # --------------------------------------------------
 
-    # ==================================================
-    # 2️⃣ HIGHER TIMEFRAME AUTHORITY
-    # ==================================================
+    if direction == "LONG":
+        htf_score = 1.5 if htf_bias_direction == "BULLISH" else -1.0
+    else:
+        htf_score = 1.5 if htf_bias_direction == "BEARISH" else -1.0
 
-    if direction == "LONG" and htf_bias_direction != "BULLISH":
-        return DecisionResult("IGNORE", 0.0, None, {}, "htf not bullish")
+    components["htf"] = htf_score
+    score += htf_score
 
-    if direction == "SHORT" and htf_bias_direction != "BEARISH":
-        return DecisionResult("IGNORE", 0.0, None, {}, "htf not bearish")
+    # --------------------------------------------------
+    # 3) Market Regime (CONVERTED TO SCORING)
+    # --------------------------------------------------
 
-    components["htf"] = 1.5
-    score += 1.5
+    regime_score = 0.0
 
-    # ==================================================
-    # 3️⃣ MARKET REGIME GATE
-    # ==================================================
+    if market_regime == "TRENDING":
+        regime_score = 1.4
+    elif market_regime == "EARLY_TREND":
+        regime_score = 1.0
+    elif market_regime == "COMPRESSION":
+        regime_score = -0.8
+    elif market_regime == "WEAK":
+        regime_score = -1.2
 
-    if market_regime in ("WEAK", "COMPRESSION"):
-        return DecisionResult("IGNORE", 0.0, None, {}, "bad market regime")
+    components["regime"] = regime_score
+    score += regime_score
 
-    if market_regime == "EARLY_TREND":
-        components["regime"] = 1.0
-        score += 1.0
-    elif market_regime == "TRENDING":
-        components["regime"] = 1.4
-        score += 1.4
+    # --------------------------------------------------
+    # 4) VWAP CONTEXT (SOFT FILTER)
+    # --------------------------------------------------
 
-    # ==================================================
-    # 4️⃣ VWAP CONTEXT (ENVIRONMENT FILTER)
-    # ==================================================
+    vwap_score = vwap_ctx.score
 
+    # small directional adjustment
     if direction == "LONG" and vwap_ctx.acceptance == "BELOW":
-        return DecisionResult("IGNORE", 0.0, None, {}, "below VWAP")
-
+        vwap_score -= 0.8
     if direction == "SHORT" and vwap_ctx.acceptance == "ABOVE":
-        return DecisionResult("IGNORE", 0.0, None, {}, "above VWAP")
+        vwap_score -= 0.8
 
-    components["vwap"] = vwap_ctx.score
-    score += vwap_ctx.score
+    components["vwap"] = vwap_score
+    score += vwap_score
 
-    # ==================================================
-    # 5️⃣ VOLUME QUALITY
-    # ==================================================
+    # --------------------------------------------------
+    # 5) Volume Quality (SOFTENED)
+    # --------------------------------------------------
 
     vol_ctx = analyze_volume(volumes, close_prices=closes)
 
-    if vol_ctx.score < 0:
-        return DecisionResult("IGNORE", 0.0, None, {}, "bad volume")
+    volume_score = 0.0
 
-    components["volume"] = vol_ctx.score
-    score += vol_ctx.score
+    if vol_ctx.score >= 1.0:
+        volume_score = 1.2
+    elif vol_ctx.score >= 0.2:
+        volume_score = 0.6
+    elif vol_ctx.score < 0:
+        volume_score = -1.0
 
-    # ==================================================
-    # 6️⃣ VOLATILITY QUALITY
-    # ==================================================
+    components["volume"] = volume_score
+    score += volume_score
+
+    # --------------------------------------------------
+    # 6) Volatility Context (SOFT)
+    # --------------------------------------------------
 
     atr = compute_atr(highs, lows, closes)
     move = closes[-1] - closes[-2] if len(closes) > 1 else 0.0
 
     volat_ctx = analyze_volatility(move, atr)
 
-    if volat_ctx.state in ["CONTRACTING", "EXHAUSTION"]:
-        return DecisionResult("IGNORE", 0.0, None, {}, "bad volatility")
+    volatility_score = 0.0
 
-    components["volatility"] = volat_ctx.score
-    score += volat_ctx.score
+    if volat_ctx.state == "EXPANDING":
+        volatility_score = 1.2
+    elif volat_ctx.state == "BUILDING":
+        volatility_score = 0.7
+    elif volat_ctx.state == "CONTRACTING":
+        volatility_score = -0.6
+    elif volat_ctx.state == "EXHAUSTION":
+        volatility_score = -1.0
 
-    # ==================================================
-    # 7️⃣ LIQUIDITY SAFETY
-    # ==================================================
+    components["volatility"] = volatility_score
+    score += volatility_score
+
+    # --------------------------------------------------
+    # 7) Liquidity Safety (SOFTENED)
+    # --------------------------------------------------
 
     liq_ctx = analyze_liquidity(volumes)
 
-    if liq_ctx.score < 0:
-        return DecisionResult("IGNORE", 0.0, None, {}, "illiquid instrument")
+    liquidity_score = 0.0
 
-    components["liquidity"] = liq_ctx.score
-    score += liq_ctx.score
+    if liq_ctx.score >= 1.0:
+        liquidity_score = 1.0
+    elif liq_ctx.score >= 0:
+        liquidity_score = 0.5
+    else:
+        liquidity_score = -1.2
 
-    # ==================================================
-    # 8️⃣ PRICE ACTION TIMING
-    # ==================================================
+    components["liquidity"] = liquidity_score
+    score += liquidity_score
+
+    # --------------------------------------------------
+    # 8) Price Action Timing
+    # --------------------------------------------------
 
     pa_ctx = price_action_context(
         prices=closes,
@@ -160,31 +178,33 @@ def final_trade_decision(
         closes=closes
     )
 
-    components["price_action"] = pa_ctx["score"]
-    score += pa_ctx["score"]
+    pa_score = pa_ctx["score"] * 1.3
 
-    # ==================================================
-    # 9️⃣ SR LOCATION CONFIRMATION
-    # ==================================================
+    components["price_action"] = round(pa_score, 2)
+    score += pa_score
+
+    # --------------------------------------------------
+    # 9) SR Location Bonus
+    # --------------------------------------------------
 
     nearest = pullback_signal.get("nearest_level")
 
     sr_score = sr_location_score(closes[-1], nearest, direction)
 
     components["sr"] = sr_score
-    score += sr_score * 1.2
+    score += sr_score * 1.1
 
-    # ==================================================
-    # 🔟 FINAL DECISION LOGIC
-    # ==================================================
+    # --------------------------------------------------
+    # 10) FINAL DECISION (TUNED THRESHOLDS)
+    # --------------------------------------------------
 
     score = round(max(min(score, 10.0), 0.0), 2)
 
-    if score >= 6.5:
+    if score >= 5.5:
         state = f"EXECUTE_{direction}"
         reason = "high quality pullback trade"
 
-    elif score >= 4.0:
+    elif score >= 3.5:
         state = f"PREPARE_{direction}"
         reason = "developing pullback setup"
 
