@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Optional, Dict
 
-from strategy.volume_context import analyze_volume
+from strategy.volume_filter import analyze_volume
 from strategy.volatility_filter import analyze_volatility, compute_atr
 from strategy.liquidity_filter import analyze_liquidity
 from strategy.price_action import price_action_context
