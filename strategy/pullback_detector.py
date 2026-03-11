@@ -41,7 +41,7 @@ def detect_pullback_signal(
     # 1️⃣ STRUCTURAL LOCATION (5m SR)
     # =====================================================
 
-    sr = compute_sr_levels_from_5m(candles_5m)
+    sr = compute_sr_levels(candles_5m)
 
     nearest = get_nearest_sr(last_price, sr, max_search_pct=max_proximity)
 
