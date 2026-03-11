@@ -1,38 +1,42 @@
-# strategy/strategy_engine.py
-
 from strategy.market_regime import detect_market_regime
 from strategy.htf_bias import get_htf_bias
 from strategy.pullback_detector import detect_pullback_signal
 from strategy.decision_engine import final_trade_decision
 
-from strategy.vwap_filter import VWAPCalculator
 from strategy.mtf_builder import MTFBuilder
-from strategy.mtf_context import analyze_mtf
 
 
 class StrategyEngine:
     """
-    PRACTICAL PULLBACK-BASED STRATEGY ENGINE
+    CLEAN PULLBACK STRATEGY ENGINE
 
-    Hierarchy:
+    Architecture:
 
-    MTF → Regime → HTF → VWAP → Pullback → Decision Engine
-
-    (With soft gates instead of hard rejections)
+    1m data → Scanner
+           ↓
+    5m candles → MTFBuilder
+           ↓
+    HTF Bias (5m trend)
+           ↓
+    Market Regime
+           ↓
+    Pullback Detection
+           ↓
+    Decision Engine
     """
 
-    def __init__(self, scanner, vwap_calculators):
+    def __init__(self, scanner):
+
         self.scanner = scanner
-        self.vwap_calculators = vwap_calculators
         self.mtf_builder = MTFBuilder()
 
     def evaluate(self, inst_key: str, ltp: float):
 
-        # --------------------------------------------------
-        # 1) DATA SUFFICIENCY
-        # --------------------------------------------------
+        # ==================================================
+        # 1️⃣ DATA SUFFICIENCY
+        # ==================================================
 
-        if not self.scanner.has_enough_data(inst_key, min_bars=40):
+        if not self.scanner.has_enough_data(inst_key, min_bars=30):
             return None
 
         prices = self.scanner.get_prices(inst_key)
@@ -44,11 +48,12 @@ class StrategyEngine:
         if not (prices and highs and lows and closes and volumes):
             return None
 
-        # --------------------------------------------------
-        # 2) MULTI TIMEFRAME CONTEXT (SOFTENED)
-        # --------------------------------------------------
+        # ==================================================
+        # 2️⃣ UPDATE MTF BUILDER
+        # ==================================================
 
         last_bar = self.scanner.get_last_n_bars(inst_key, 1)
+
         if not last_bar:
             return None
 
@@ -64,26 +69,33 @@ class StrategyEngine:
             bar["volume"]
         )
 
-        candle_5m = self.mtf_builder.get_latest_tf(inst_key, minutes=5)
-        hist_5m = self.mtf_builder.get_tf_history(inst_key, minutes=5, lookback=3)
+        # ==================================================
+        # 3️⃣ GET 5m HISTORY
+        # ==================================================
 
-        candle_15m = self.mtf_builder.get_latest_tf(inst_key, minutes=15)
-        hist_15m = self.mtf_builder.get_tf_history(inst_key, minutes=15, lookback=3)
-
-        mtf_ctx = analyze_mtf(
-            candle_5m,
-            candle_15m,
-            history_5m=hist_5m,
-            history_15m=hist_15m
+        hist_5m = self.mtf_builder.get_tf_history(
+            inst_key,
+            minutes=5,
+            lookback=120
         )
 
-        # Only reject extreme conflict
-        if mtf_ctx.conflict and mtf_ctx.strength < 0.8:
+        if not hist_5m or len(hist_5m) < 60:
             return None
 
-        # --------------------------------------------------
-        # 3) MARKET REGIME (SOFTENED)
-        # --------------------------------------------------
+        # ==================================================
+        # 4️⃣ HTF BIAS (5m trend)
+        # ==================================================
+
+        htf_bias = get_htf_bias(
+            candles_5m=hist_5m
+        )
+
+        if htf_bias.direction == "NEUTRAL":
+            return None
+
+        # ==================================================
+        # 5️⃣ MARKET REGIME
+        # ==================================================
 
         regime = detect_market_regime(
             highs=highs,
@@ -91,45 +103,12 @@ class StrategyEngine:
             closes=closes
         )
 
-        # Do NOT fully reject – only block extremely bad
-        if regime.state == "WEAK" and regime.strength < 1.5:
+        if regime.state == "WEAK":
             return None
 
-        # --------------------------------------------------
-        # 4) VWAP CONTEXT
-        # --------------------------------------------------
-
-        if inst_key not in self.vwap_calculators:
-            self.vwap_calculators[inst_key] = VWAPCalculator()
-
-        vwap_calc = self.vwap_calculators[inst_key]
-
-        vwap_calc.update(
-            ltp,
-            volumes[-1] if volumes else 0
-        )
-
-        vwap_ctx = vwap_calc.get_context(ltp)
-
-        # --------------------------------------------------
-        # 5) HTF BIAS (SOFT ALIGNMENT)
-        # --------------------------------------------------
-
-        htf_bias = get_htf_bias(
-            prices=prices,
-            vwap_value=vwap_ctx.vwap
-        )
-
-        # Only reject if STRONGLY opposite
-        if mtf_ctx.direction == "BULLISH" and htf_bias.direction == "BEARISH" and htf_bias.strength > 6:
-            return None
-
-        if mtf_ctx.direction == "BEARISH" and htf_bias.direction == "BULLISH" and htf_bias.strength > 6:
-            return None
-
-        # --------------------------------------------------
-        # 6) PULLBACK DETECTION
-        # --------------------------------------------------
+        # ==================================================
+        # 6️⃣ PULLBACK DETECTION
+        # ==================================================
 
         pullback = detect_pullback_signal(
             prices=prices,
@@ -137,15 +116,16 @@ class StrategyEngine:
             lows=lows,
             closes=closes,
             volumes=volumes,
-            htf_direction=mtf_ctx.direction
+            candles_5m=hist_5m,
+            htf_direction=htf_bias.direction
         )
 
         if not pullback:
             return None
 
-        # --------------------------------------------------
-        # 7) FINAL DECISION ENGINE
-        # --------------------------------------------------
+        # ==================================================
+        # 7️⃣ FINAL DECISION
+        # ==================================================
 
         decision = final_trade_decision(
             inst_key=inst_key,
@@ -156,17 +136,13 @@ class StrategyEngine:
             volumes=volumes,
             market_regime=regime.state,
             htf_bias_direction=htf_bias.direction,
-            vwap_ctx=vwap_ctx,
+            vwap_ctx=None,
             pullback_signal=pullback
         )
 
-        # --------------------------------------------------
-        # 8) Add Debug Context (Helpful for Logs)
-        # --------------------------------------------------
-
-        decision.components["mtf_direction"] = mtf_ctx.direction
-        decision.components["mtf_strength"] = mtf_ctx.strength
+        # Debug info
         decision.components["regime"] = regime.state
         decision.components["htf_bias"] = htf_bias.label
 
         return decision
+        
