@@ -15,8 +15,8 @@ Structure:
 from typing import Optional, Dict, List
 
 from strategy.sr_levels import compute_sr_levels, get_nearest_sr
-from strategy.volume_context import analyze_volume
-from strategy.volatility_context import compute_atr, analyze_volatility
+from strategy.volume_filter import analyze_volume
+from strategy.volatility_filter import compute_atr, analyze_volatility
 from strategy.price_action import rejection_info
 
 
