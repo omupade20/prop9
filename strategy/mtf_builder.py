@@ -1,30 +1,33 @@
 # strategy/mtf_builder.py
+
 """
-MTFBuilder — build higher-timeframe candles from 5-minute bars.
+MTFBuilder — builds higher timeframe candles from 1-minute bars.
 
-Design goals:
-- No extra API calls (aggregate 5m bars you already have).
-- Low latency: aggregates the last N 5-minute bars immediately.
-- Memory-safe: uses deque with configurable maxlen.
-- Simple, deterministic API: update(...) + get_latest_tf(...) / get_tf_history(...).
+System architecture rule:
+1m data  → scanner
+5m data  → MTFBuilder
 
-NEW STRUCTURE:
-- Base bars = 5-minute
-- Builds:
-    - 15m (3 x 5m)
-    - 30m (6 x 5m)
+This module is the SINGLE source of 5-minute candles for the system.
+
+Design goals
+------------
+• deterministic aggregation
+• no duplicate minute bars
+• fast deque storage
+• minimal memory usage
 """
 
 from collections import defaultdict, deque
 from datetime import datetime
 from typing import Deque, Dict, List, Optional, Union
 
+
 ISOFMT = "%Y-%m-%dT%H:%M:%S"
 
 
-def _to_5min_iso(ts: Union[str, datetime]) -> str:
+def _normalize_minute(ts: Union[str, datetime]) -> str:
     """
-    Normalize timestamp to 5-minute boundary.
+    Normalize timestamps to minute boundary.
     """
     if isinstance(ts, str):
         try:
@@ -34,29 +37,32 @@ def _to_5min_iso(ts: Union[str, datetime]) -> str:
     else:
         dt = ts
 
-    # Round DOWN to nearest 5 minutes
-    minute = (dt.minute // 5) * 5
-    dt = dt.replace(minute=minute, second=0, microsecond=0)
-
+    dt = dt.replace(second=0, microsecond=0)
     return dt.strftime(ISOFMT)
 
 
 class MTFBuilder:
     """
-    Builds higher timeframe candles (N-minute) from 5-minute bars.
+    Builds 5-minute candles from 1-minute bars.
 
-    Usage:
-      - Call update(inst_key, timestamp, o,h,l,c,v) for each 5-minute bar
-      - Use get_latest_tf(inst_key, minutes=15) to get aggregated 15m candle
-      - Use get_tf_history(inst_key, minutes=15, lookback=3) to get last 3 aggregated 15m candles
+    Only responsibility:
+    -------------------
+    Maintain rolling 1m bars and aggregate them into 5m candles.
+
+    Other modules MUST fetch 5m candles from here.
     """
 
-    def __init__(self, max_5m_bars: int = 1200):
-        # store recent 5-minute bars per instrument
-        self.max_5m_bars = max_5m_bars
+    def __init__(self, max_1m_bars: int = 2000):
+        self.max_1m_bars = max_1m_bars
+
+        # instrument → deque of 1m bars
         self.buffers: Dict[str, Deque[dict]] = defaultdict(
-            lambda: deque(maxlen=self.max_5m_bars)
+            lambda: deque(maxlen=self.max_1m_bars)
         )
+
+    # ---------------------------------------------------
+    # 1️⃣ Update with 1-minute bar
+    # ---------------------------------------------------
 
     def update(
         self,
@@ -69,25 +75,37 @@ class MTFBuilder:
         v: float
     ):
         """
-        Add a 5-minute bar. timestamp may be ISO string or datetime.
-        """
-        t_iso = _to_5min_iso(timestamp)
+        Add a 1-minute bar.
 
-        bar = {
+        Prevents duplicate bars if websocket sends repeated updates.
+        """
+
+        t_iso = _normalize_minute(timestamp)
+
+        bars = self.buffers[inst_key]
+
+        # prevent duplicate minute insert
+        if bars and bars[-1]["time"] == t_iso:
+            return
+
+        bars.append({
             "time": t_iso,
             "open": o,
             "high": h,
             "low": l,
             "close": c,
             "volume": v
-        }
+        })
 
-        self.buffers[inst_key].append(bar)
+    # ---------------------------------------------------
+    # 2️⃣ Aggregation helper
+    # ---------------------------------------------------
 
-    def _aggregate(self, bars: List[dict]) -> dict:
+    def _aggregate_5m(self, bars: List[dict]) -> dict:
         """
-        Aggregate a list of 5-minute bar dicts (oldest->newest) into one higher TF candle.
+        Aggregate 5 × 1m bars into a 5m candle.
         """
+
         return {
             "time_start": bars[0]["time"],
             "time_end": bars[-1]["time"],
@@ -95,73 +113,59 @@ class MTFBuilder:
             "high": max(b["high"] for b in bars),
             "low": min(b["low"] for b in bars),
             "close": bars[-1]["close"],
-            "volume": sum(b.get("volume", 0) for b in bars)
+            "volume": sum(b["volume"] for b in bars),
         }
 
-    def get_latest_tf(self, inst_key: str, minutes: int = 15) -> Optional[dict]:
-        """
-        Return aggregated candle of the last N 5-minute bars.
+    # ---------------------------------------------------
+    # 3️⃣ Latest 5m candle
+    # ---------------------------------------------------
 
-        Example:
-        - minutes=15  -> needs 3 bars (3 * 5m)
-        - minutes=30  -> needs 6 bars (6 * 5m)
+    def get_latest_5m(self, inst_key: str) -> Optional[dict]:
+
+        bars = self.buffers.get(inst_key)
+
+        if not bars or len(bars) < 5:
+            return None
+
+        last_five = list(bars)[-5:]
+
+        return self._aggregate_5m(last_five)
+
+    # ---------------------------------------------------
+    # 4️⃣ 5m candle history
+    # ---------------------------------------------------
+
+    def get_5m_history(self, inst_key: str, lookback: int = 100) -> List[dict]:
+        """
+        Return last N 5-minute candles.
         """
 
         bars = self.buffers.get(inst_key)
 
-        if not bars:
-            return None
+        if not bars or len(bars) < 5:
+            return []
 
-        # Convert minutes to required 5m bar count
-        required_bars = minutes // 5
-
-        if len(bars) < required_bars:
-            return None
-
-        chunk = list(bars)[-required_bars:]
-        return self._aggregate(chunk)
-
-    def get_tf_history(
-        self,
-        inst_key: str,
-        minutes: int = 15,
-        lookback: int = 3
-    ) -> List[dict]:
-        """
-        Return list of aggregated candles for given TF.
-
-        Each aggregated candle uses contiguous blocks of required 5m bars.
-        """
+        bar_list = list(bars)
 
         out: List[dict] = []
 
-        bars = self.buffers.get(inst_key)
-        if not bars:
-            return out
-
-        bar_list = list(bars)
         total = len(bar_list)
 
-        required_bars = minutes // 5
+        # number of possible 5m candles
+        possible = total // 5
 
-        for i in range(lookback, 0, -1):
-            end = total - (i - 1) * required_bars
-            start = end - required_bars
+        candles_to_build = min(possible, lookback)
+
+        for i in range(candles_to_build):
+
+            end = total - (i * 5)
+            start = end - 5
 
             if start < 0:
-                continue
+                break
 
             chunk = bar_list[start:end]
-            out.append(self._aggregate(chunk))
 
-        return out
+            out.append(self._aggregate_5m(chunk))
 
-    # --------------------------------------------------
-    # Convenience helpers for NEW system
-    # --------------------------------------------------
-
-    def get_latest_15m(self, inst_key: str) -> Optional[dict]:
-        return self.get_latest_tf(inst_key, minutes=15)
-
-    def get_latest_30m(self, inst_key: str) -> Optional[dict]:
-        return self.get_latest_tf(inst_key, minutes=30)
+        return list(reversed(out))
