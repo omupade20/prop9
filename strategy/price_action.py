@@ -29,8 +29,8 @@ def detect_pullback_in_trend(
     prices: List[float],
     ema_short: Optional[float] = None,
     ema_long: Optional[float] = None,
-    lookback: int = 4,
-    max_depth_pct: float = 0.001
+    lookback: int = 6,
+    max_depth_pct: float = 0.006
 ) -> Optional[Dict]:
     """
     Detects a shallow pullback inside a trend.
@@ -240,3 +240,4 @@ def price_action_context(
     result["score"] = round(score, 3)
     result["comment"] = " | ".join(comments) if comments else "no_pa"
     return result
+    
