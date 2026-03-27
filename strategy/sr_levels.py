@@ -31,10 +31,6 @@ def _find_local_extrema(values: List[float], window: int = 5) -> Tuple[List[Tupl
     return maxima, minima
 
 
-# -------------------------------------------------
-# CLUSTER LEVELS INTO ZONES
-# -------------------------------------------------
-
 def _cluster_levels(peaks: List[float], tol_pct: float = 0.004) -> List[Dict]:
 
     if not peaks:
@@ -58,22 +54,19 @@ def _cluster_levels(peaks: List[float], tol_pct: float = 0.004) -> List[Dict]:
 
     clusters.append(cluster)
 
-    zones = []
+    out = []
 
     for c in clusters:
 
         lvl = mean(c)
-        width = lvl * tol_pct
 
-        zones.append({
+        out.append({
             "level": round(lvl, 6),
-            "zone_low": round(lvl - width, 6),
-            "zone_high": round(lvl + width, 6),
             "count": len(c),
             "strength": min(len(c), 4)
         })
 
-    return zones
+    return out
 
 
 # -------------------------------------------------
@@ -115,7 +108,7 @@ def compute_sr_levels_from_5m(
 
 
 # -------------------------------------------------
-# BACKWARD COMPATIBILITY
+# BACKWARD COMPATIBILITY (OLD SYSTEM SUPPORT)
 # -------------------------------------------------
 
 def compute_sr_levels(
@@ -123,6 +116,10 @@ def compute_sr_levels(
     lows: List[float],
     lookback: int = 120
 ) -> Dict[str, List[Dict]]:
+    """
+    Compatibility wrapper so older modules don't break.
+    Converts highs/lows into pseudo candles.
+    """
 
     if not highs or not lows:
         return {"supports": [], "resistances": []}
@@ -142,13 +139,13 @@ def compute_sr_levels(
 
 
 # -------------------------------------------------
-# FIND NEAREST SR ZONE
+# NEAREST SR
 # -------------------------------------------------
 
 def get_nearest_sr(
     price: float,
     sr_levels: Dict[str, List[Dict]],
-    max_search_pct: float = 0.02
+    max_search_pct: float = 0.03
 ) -> Optional[Dict]:
 
     supports = sr_levels.get("supports", [])
@@ -167,8 +164,6 @@ def get_nearest_sr(
             best = {
                 "type": "support",
                 "level": lvl,
-                "zone_low": s["zone_low"],
-                "zone_high": s["zone_high"],
                 "dist_pct": dist,
                 "strength": s.get("strength", 1)
             }
@@ -176,15 +171,13 @@ def get_nearest_sr(
     for r in resistances:
 
         lvl = r["level"]
-        dist = abs(price - lvl) / max(lvl, 1e-9)
+        dist = abs(lvl - price) / max(price, 1e-9)
 
         if dist < best_dist:
             best_dist = dist
             best = {
                 "type": "resistance",
                 "level": lvl,
-                "zone_low": r["zone_low"],
-                "zone_high": r["zone_high"],
                 "dist_pct": dist,
                 "strength": r.get("strength", 1)
             }
@@ -203,7 +196,7 @@ def sr_location_score(
     price: float,
     nearest_sr: Optional[Dict],
     direction: str,
-    proximity_threshold: float = 0.015
+    proximity_threshold: float = 0.02
 ) -> float:
 
     if nearest_sr is None:
