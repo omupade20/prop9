@@ -1,3 +1,5 @@
+# strategy/pullback_detector.py
+
 from typing import Optional, Dict, List
 from strategy.sr_levels import compute_sr_levels, get_nearest_sr
 from strategy.volume_filter import analyze_volume
@@ -15,6 +17,18 @@ def detect_pullback_signal(
     max_proximity: float = 0.018,
     min_bars: int = 35
 ) -> Optional[Dict]:
+    """
+    PROFESSIONAL PULLBACK DETECTOR
+
+    Purpose:
+    - Detect HIGH QUALITY mean reversion entries
+    - Avoid chasing extended moves
+    - Enter at smart locations
+
+    CORE LOGIC:
+    LONG  -> price NEAR SUPPORT with confirmation
+    SHORT -> price NEAR RESISTANCE with confirmation
+    """
 
     if len(prices) < min_bars:
         return None
@@ -22,7 +36,7 @@ def detect_pullback_signal(
     last_price = closes[-1]
 
     # --------------------------------------------------
-    # 1) STRUCTURAL LOCATION
+    # 1) STRUCTURAL LOCATION (WHERE ARE WE?)
     # --------------------------------------------------
 
     sr = compute_sr_levels(highs, lows)
@@ -31,6 +45,7 @@ def detect_pullback_signal(
     if not nearest:
         return None
 
+    # Direction intent from SR
     trade_direction = None
 
     if nearest["type"] == "support" and htf_direction == "BULLISH":
@@ -42,40 +57,19 @@ def detect_pullback_signal(
     else:
         return None
 
-    level = nearest["level"]
-
     # --------------------------------------------------
-    # 2) LIQUIDITY SWEEP + RECLAIM (NEW LOGIC)
+    # 2) EXTENSION FILTER (AVOID CHASING)
     # --------------------------------------------------
-
-    sweep_detected = False
-
-    if trade_direction == "LONG":
-
-        if lows[-1] < level and closes[-1] > level:
-            sweep_detected = True
-
-    if trade_direction == "SHORT":
-
-        if highs[-1] > level and closes[-1] < level:
-            sweep_detected = True
-
-    if not sweep_detected:
-        return None
-
-    # --------------------------------------------------
-    # 3) EXTENSION FILTER
-    # --------------------------------------------------
-
-    atr = compute_atr(highs, lows, closes)
 
     recent_move = abs(closes[-1] - closes[-6])
 
+    atr = compute_atr(highs, lows, closes)
+
     if atr and recent_move > atr * 1.6:
-        return None
+        return None  # too extended
 
     # --------------------------------------------------
-    # 4) VOLATILITY QUALITY
+    # 3) VOLATILITY QUALITY CHECK
     # --------------------------------------------------
 
     volat_ctx = analyze_volatility(
@@ -87,23 +81,11 @@ def detect_pullback_signal(
         return None
 
     # --------------------------------------------------
-    # 5) STOP-HUNT CANDLE FILTER
-    # --------------------------------------------------
-
-    candle_range = highs[-1] - lows[-1]
-
-    if atr and candle_range > atr * 1.8:
-        return None
-
-    # --------------------------------------------------
-    # 6) PRICE ACTION CONFIRMATION
+    # 4) PRICE ACTION CONFIRMATION
     # --------------------------------------------------
 
     last_bar_rejection = rejection_info(
-        closes[-2],
-        highs[-1],
-        lows[-1],
-        closes[-1]
+        closes[-2], highs[-1], lows[-1], closes[-1]
     )
 
     price_reaction = False
@@ -114,6 +96,7 @@ def detect_pullback_signal(
     if trade_direction == "SHORT" and last_bar_rejection["rejection_type"] == "BEARISH":
         price_reaction = True
 
+    # Basic directional reaction
     if trade_direction == "LONG" and closes[-1] > closes[-3]:
         price_reaction = True
 
@@ -121,7 +104,7 @@ def detect_pullback_signal(
         price_reaction = True
 
     # --------------------------------------------------
-    # 7) VOLUME CONFIRMATION
+    # 5) VOLUME CONFIRMATION
     # --------------------------------------------------
 
     vol_ctx = analyze_volume(volumes, close_prices=closes)
@@ -129,7 +112,7 @@ def detect_pullback_signal(
     volume_ok = vol_ctx.score >= 0.6
 
     # --------------------------------------------------
-    # 8) MOMENTUM FILTER
+    # 6) MOMENTUM FILTER (DON’T BUY WEAK)
     # --------------------------------------------------
 
     short_term_trend = closes[-1] - closes[-5]
@@ -143,7 +126,7 @@ def detect_pullback_signal(
         momentum_ok = True
 
     # --------------------------------------------------
-    # 9) CONFIDENCE SCORING
+    # 7) CONFIDENCE SCORING SYSTEM
     # --------------------------------------------------
 
     components = {
@@ -151,16 +134,12 @@ def detect_pullback_signal(
         "price_action": 0.0,
         "volume": 0.0,
         "volatility": 0.0,
-        "momentum": 0.0,
-        "liquidity_sweep": 0.0
+        "momentum": 0.0
     }
 
-    # SR proximity
+    # Location quality
     proximity_score = max(0, (max_proximity - nearest["dist_pct"]) * 60)
     components["location"] = min(proximity_score, 2.0)
-
-    if sweep_detected:
-        components["liquidity_sweep"] = 1.5
 
     if price_reaction:
         components["price_action"] = 2.0
@@ -177,15 +156,13 @@ def detect_pullback_signal(
     total_score = sum(components.values())
 
     # --------------------------------------------------
-    # 10) CLASSIFICATION
+    # 8) CLASSIFICATION
     # --------------------------------------------------
 
-    if total_score >= 5.5:
+    if total_score >= 5.0:
         signal = "CONFIRMED"
-
-    elif total_score >= 3.5:
+    elif total_score >= 3.0:
         signal = "POTENTIAL"
-
     else:
         return None
 
@@ -198,8 +175,7 @@ def detect_pullback_signal(
         "context": {
             "volatility": volat_ctx.state,
             "volume": vol_ctx.strength,
-            "rejection": last_bar_rejection["rejection_type"],
-            "liquidity_sweep": sweep_detected
+            "rejection": last_bar_rejection["rejection_type"]
         },
         "reason": f"{signal}_{trade_direction}"
     }
