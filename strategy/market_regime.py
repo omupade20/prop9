@@ -1,5 +1,3 @@
-# strategy/market_regime.py
-
 from typing import List, Optional
 from dataclasses import dataclass
 
@@ -63,10 +61,10 @@ def compute_adx(highs: List[float], lows: List[float], closes: List[float], peri
 
 @dataclass
 class MarketRegime:
-    state: str            # WEAK | COMPRESSION | EARLY_TREND | TRENDING | EXHAUSTION
-    mode: str             # TREND_DAY | RANGE_DAY
-    strength: float       # 0 – 10
-    volatility: float     # normalized ATR
+    state: str
+    mode: str
+    strength: float
+    volatility: float
     comment: str
 
 
@@ -81,39 +79,15 @@ def detect_market_regime(
     index_regime: Optional["MarketRegime"] = None,
     min_bars: int = 30
 ) -> MarketRegime:
-    """
-    AUTHORITATIVE Market Regime Detector.
-
-    Responsibilities:
-    - Detect STRUCTURAL state
-    - Decide TRADING MODE (TREND vs RANGE)
-    - Provide STRENGTH as confidence
-    """
-
-    # ---------------------
-    # Safety
-    # ---------------------
 
     if len(highs) < min_bars or len(lows) < min_bars or len(closes) < min_bars:
-        return MarketRegime(
-            state="WEAK",
-            mode="RANGE_DAY",
-            strength=0.5,
-            volatility=0.0,
-            comment="Insufficient data"
-        )
+        return MarketRegime("WEAK", "RANGE_DAY", 0.5, 0.0, "Insufficient data")
 
-    adx = compute_adx(highs, lows, closes)
     atr = compute_atr(highs, lows, closes)
+    adx = compute_adx(highs, lows, closes)  # still used, but not dominant
 
-    if adx is None or atr is None:
-        return MarketRegime(
-            state="WEAK",
-            mode="RANGE_DAY",
-            strength=0.5,
-            volatility=0.0,
-            comment="Indicators unavailable"
-        )
+    if atr is None:
+        return MarketRegime("WEAK", "RANGE_DAY", 0.5, 0.0, "Indicators unavailable")
 
     # ---------------------
     # Volatility Normalization
@@ -124,13 +98,15 @@ def detect_market_regime(
     vol_norm = atr / avg_price if avg_price > 0 else 0.0
 
     # ---------------------
-    # Range Comparison
+    # Range Comparison (PRIMARY DRIVER)
     # ---------------------
 
     recent_range = max(highs[-10:]) - min(lows[-10:])
+
     prev_highs = highs[-20:-10] if len(highs) >= 20 else highs[:len(highs)//2]
     prev_lows = lows[-20:-10] if len(lows) >= 20 else lows[:len(lows)//2]
     prev_range = (max(prev_highs) - min(prev_lows)) if prev_highs and prev_lows else 0.0
+
     if prev_range <= 0:
         prev_range = max(recent_range * 0.8, 1e-9)
 
@@ -138,34 +114,36 @@ def detect_market_regime(
         return max(0.0, min(10.0, x))
 
     # =====================
-    # REGIME LOGIC
+    # NEW REGIME LOGIC (RANGE-BASED)
     # =====================
 
-    # EARLY TREND
-    if adx >= 18 and recent_range > prev_range * 1.3:
-        strength = cap(4.5 + (adx - 18) * 0.2)
+    expansion_ratio = recent_range / (prev_range + 1e-9)
+
+    # EARLY TREND (fast detection)
+    if expansion_ratio > 1.3:
+        strength = cap(4.5 + (expansion_ratio - 1.3) * 5)
         return MarketRegime(
             state="EARLY_TREND",
             mode="TREND_DAY",
             strength=strength,
             volatility=vol_norm,
-            comment="Fresh expansion with momentum"
+            comment="Range expansion detected"
         )
 
-    # TRENDING
-    if adx >= 28:
-        strength = cap(6.5 + (adx - 28) * 0.15)
+    # TRENDING (strong expansion)
+    if expansion_ratio > 1.6:
+        strength = cap(6.5 + (expansion_ratio - 1.6) * 5)
         return MarketRegime(
             state="TRENDING",
             mode="TREND_DAY",
             strength=strength,
             volatility=vol_norm,
-            comment="Established directional trend"
+            comment="Strong range expansion"
         )
 
     # COMPRESSION
-    if recent_range < prev_range * 0.7:
-        strength = cap(2.5 + (prev_range - recent_range) / (prev_range + 1e-9))
+    if expansion_ratio < 0.75:
+        strength = cap(2.5 + (1 - expansion_ratio) * 3)
         return MarketRegime(
             state="COMPRESSION",
             mode="RANGE_DAY",
@@ -174,8 +152,8 @@ def detect_market_regime(
             comment="Volatility contraction"
         )
 
-    # EXHAUSTION
-    if adx > 28 and recent_range < prev_range * 0.85 and vol_norm < 0.008:
+    # EXHAUSTION (optional ADX usage)
+    if adx and adx > 28 and expansion_ratio < 0.9:
         strength = cap(3.5 + (adx - 28) * 0.1)
         return MarketRegime(
             state="EXHAUSTION",
@@ -185,28 +163,26 @@ def detect_market_regime(
             comment="Trend losing energy"
         )
 
-    # DEFAULT: WEAK / CHOPPY
-    strength = cap(1.5 + (adx / 30.0) * 1.2)
+    # DEFAULT
+    strength = cap(2.0 + expansion_ratio * 2)
+
     regime = MarketRegime(
         state="WEAK",
         mode="RANGE_DAY",
         strength=strength,
         volatility=vol_norm,
-        comment="Low momentum / mixed structure"
+        comment="No clear structure"
     )
 
-    # ---------------------
-    # Optional Index Bias
-    # ---------------------
-
+    # Optional index alignment
     if index_regime:
         try:
             if index_regime.mode == "TREND_DAY":
                 regime.strength = cap(regime.strength + min(1.2, index_regime.strength * 0.15))
-                regime.comment += " | aligned with index trend"
+                regime.comment += " | index aligned"
             else:
                 regime.strength = cap(regime.strength - 0.7)
-                regime.comment += " | index not trending"
+                regime.comment += " | index weak"
         except Exception:
             pass
 
