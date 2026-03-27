@@ -21,6 +21,9 @@ class StrategyEngine:
         self.vwap_calculators = vwap_calculators
         self.mtf_builder = MTFBuilder()
 
+        # 🔥 FIX: prevent duplicate 1m → MTF updates
+        self.last_bar_time = {}
+
     def evaluate(self, inst_key: str, ltp: float):
 
         # ==================================================
@@ -48,16 +51,21 @@ class StrategyEngine:
             return None
 
         bar = last_bar[0]
+        bar_time = bar["time"]
 
-        self.mtf_builder.update(
-            inst_key,
-            bar["time"],
-            bar["open"],
-            bar["high"],
-            bar["low"],
-            bar["close"],
-            bar["volume"]
-        )
+        # 🔥 FIX: avoid duplicate MTF updates
+        if self.last_bar_time.get(inst_key) != bar_time:
+            self.last_bar_time[inst_key] = bar_time
+
+            self.mtf_builder.update(
+                inst_key,
+                bar["time"],
+                bar["open"],
+                bar["high"],
+                bar["low"],
+                bar["close"],
+                bar["volume"]
+            )
 
         candle_5m = self.mtf_builder.get_latest_5m(inst_key)
         hist_5m_small = self.mtf_builder.get_tf_history(inst_key, minutes=5, lookback=3)
@@ -75,11 +83,12 @@ class StrategyEngine:
         if mtf_ctx.direction == "NEUTRAL":
             return None
 
-        if mtf_ctx.conflict:
+        # 🔥 FIX: allow strong trends even if slight conflict
+        if mtf_ctx.conflict and mtf_ctx.strength < 1.2:
             return None
 
         # ==================================================
-        # 3️⃣ MARKET REGIME (FIXED → 5m)
+        # 3️⃣ MARKET REGIME (5m)
         # ==================================================
 
         hist_5m = self.mtf_builder.get_tf_history(inst_key, minutes=5, lookback=120)
@@ -97,7 +106,8 @@ class StrategyEngine:
             closes=closes_5m
         )
 
-        if regime.state in ("WEAK", "COMPRESSION"):
+        # 🔥 FIX: allow EARLY_TREND
+        if regime.state == "WEAK":
             return None
 
         # ==================================================
@@ -144,7 +154,7 @@ class StrategyEngine:
             closes=closes,
             volumes=volumes,
             market_regime=regime.state,
-            htf_bias_direction=mtf_ctx.direction,  # FIXED
+            htf_bias_direction=mtf_ctx.direction,
             vwap_ctx=vwap_ctx,
             pullback_signal=pullback
         )
