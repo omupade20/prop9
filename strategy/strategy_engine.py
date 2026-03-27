@@ -1,5 +1,4 @@
 from strategy.market_regime import detect_market_regime
-from strategy.htf_bias import get_htf_bias
 from strategy.pullback_detector import detect_pullback_signal
 from strategy.decision_engine import final_trade_decision
 
@@ -10,11 +9,11 @@ from strategy.mtf_context import analyze_mtf
 
 class StrategyEngine:
     """
-    PROFESSIONAL PULLBACK-BASED STRATEGY ENGINE
+    CLEAN PULLBACK-BASED STRATEGY ENGINE
 
     Hierarchy:
 
-    MTF → Regime → VWAP → HTF → Pullback → Decision Engine
+    MTF (15m) → Regime (5m) → VWAP → Pullback → Decision Engine
     """
 
     def __init__(self, scanner, vwap_calculators):
@@ -41,7 +40,7 @@ class StrategyEngine:
             return None
 
         # ==================================================
-        # 2️⃣ MULTI TIMEFRAME CONTEXT
+        # 2️⃣ MULTI TIMEFRAME CONTEXT (15m direction)
         # ==================================================
 
         last_bar = self.scanner.get_last_n_bars(inst_key, 1)
@@ -50,7 +49,6 @@ class StrategyEngine:
 
         bar = last_bar[0]
 
-        # Update MTF builder
         self.mtf_builder.update(
             inst_key,
             bar["time"],
@@ -81,13 +79,22 @@ class StrategyEngine:
             return None
 
         # ==================================================
-        # 3️⃣ MARKET REGIME
+        # 3️⃣ MARKET REGIME (FIXED → 5m)
         # ==================================================
 
+        hist_5m = self.mtf_builder.get_tf_history(inst_key, minutes=5, lookback=120)
+
+        if not hist_5m or len(hist_5m) < 30:
+            return None
+
+        highs_5m = [c["high"] for c in hist_5m]
+        lows_5m = [c["low"] for c in hist_5m]
+        closes_5m = [c["close"] for c in hist_5m]
+
         regime = detect_market_regime(
-            highs=highs,
-            lows=lows,
-            closes=closes
+            highs=highs_5m,
+            lows=lows_5m,
+            closes=closes_5m
         )
 
         if regime.state in ("WEAK", "COMPRESSION"):
@@ -110,31 +117,8 @@ class StrategyEngine:
         vwap_ctx = vwap_calc.get_context(ltp)
 
         # ==================================================
-        # 5️⃣ HTF BIAS (5m candles)
+        # 5️⃣ PULLBACK DETECTION
         # ==================================================
-
-        hist_5m = self.mtf_builder.get_tf_history(inst_key, minutes=5, lookback=120)
-
-        if not hist_5m or len(hist_5m) < 60:
-            return None
-
-        htf_bias = get_htf_bias(
-            candles_5m=hist_5m,
-            vwap_value=vwap_ctx.vwap
-        )
-
-        if mtf_ctx.direction == "BULLISH" and htf_bias.direction != "BULLISH":
-            return None
-
-        if mtf_ctx.direction == "BEARISH" and htf_bias.direction != "BEARISH":
-            return None
-
-        # ==================================================
-        # 6️⃣ PULLBACK DETECTION
-        # ==================================================
-
-        highs_5m = [c["high"] for c in hist_5m]
-        lows_5m = [c["low"] for c in hist_5m]
 
         pullback = detect_pullback_signal(
             prices=prices,
@@ -149,7 +133,7 @@ class StrategyEngine:
             return None
 
         # ==================================================
-        # 7️⃣ FINAL DECISION ENGINE
+        # 6️⃣ FINAL DECISION ENGINE
         # ==================================================
 
         decision = final_trade_decision(
@@ -160,15 +144,14 @@ class StrategyEngine:
             closes=closes,
             volumes=volumes,
             market_regime=regime.state,
-            htf_bias_direction=htf_bias.direction,
+            htf_bias_direction=mtf_ctx.direction,  # FIXED
             vwap_ctx=vwap_ctx,
             pullback_signal=pullback
         )
 
-        # Debug information
+        # Debug info
         decision.components["mtf_direction"] = mtf_ctx.direction
         decision.components["mtf_strength"] = mtf_ctx.strength
         decision.components["regime"] = regime.state
-        decision.components["htf_bias"] = htf_bias.label
 
         return decision
