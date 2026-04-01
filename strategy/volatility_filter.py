@@ -1,21 +1,11 @@
 # strategy/volatility_context.py
-"""
-Volatility context (STRICT, continuation-focused).
-
-Purpose:
-- CONFIRM real expansion
-- PENALIZE noisy spikes
-- FILTER choppy conditions
-
-Score range: -1.5 .. +1.5 (conservative)
-"""
 
 from dataclasses import dataclass
 from typing import List, Optional
 
 
 # =========================
-# Core ATR Calculations
+# ATR CALCULATIONS
 # =========================
 
 def compute_true_range(highs: List[float], lows: List[float], closes: List[float]) -> List[float]:
@@ -46,103 +36,89 @@ def compute_atr(
 
 
 # =========================
-# Volatility Context Output
+# OUTPUT
 # =========================
 
 @dataclass
 class VolatilityContext:
-    state: str          # CONTRACTING | BUILDING | EXPANDING | EXHAUSTION
-    score: float        # -1.5 .. +1.5
+    state: str          # LOW | NORMAL | EXPANDING | HIGH
+    score: float        # -1 to +1
     atr: float
     move_pct_atr: float
     comment: str
 
 
 # =========================
-# Volatility Intelligence
+# SIMPLIFIED VOLATILITY LOGIC
 # =========================
 
 def analyze_volatility(
     current_move: float,
     atr_value: Optional[float],
-    atr_history: Optional[List[float]] = None
 ) -> VolatilityContext:
     """
-    Institutional volatility analysis.
+    SIMPLIFIED VOLATILITY CONTEXT
 
-    Rules:
-    - <0.6 ATR = noise
-    - 0.6–1.1 ATR = building
-    - 1.1–1.6 ATR = healthy expansion
-    - >1.6 ATR = spike / exhaustion risk
+    Purpose:
+    - confirm movement quality
+    - avoid over-blocking trades
     """
 
     if atr_value is None or atr_value <= 0:
-        return VolatilityContext(
-            "UNKNOWN", 0.0, 0.0, 0.0, "ATR unavailable"
-        )
+        return VolatilityContext("UNKNOWN", 0.0, 0.0, 0.0, "no_atr")
 
     move_pct_atr = abs(current_move) / atr_value
 
     # ----------------------
-    # 1️⃣ Contracting / Noise
+    # LOW VOLATILITY
     # ----------------------
-    if move_pct_atr < 0.6:
+    if move_pct_atr < 0.5:
         return VolatilityContext(
-            state="CONTRACTING",
-            score=-0.6,
+            state="LOW",
+            score=-0.3,   # very small penalty only
             atr=round(atr_value, 6),
             move_pct_atr=round(move_pct_atr, 2),
-            comment="volatility_too_low"
+            comment="low_volatility"
         )
 
     # ----------------------
-    # 2️⃣ Building Phase
+    # NORMAL (ACCEPTABLE)
     # ----------------------
     if move_pct_atr < 1.2:
         return VolatilityContext(
-            state="BUILDING",
-            score=0.2,
+            state="NORMAL",
+            score=0.3,
             atr=round(atr_value, 6),
             move_pct_atr=round(move_pct_atr, 2),
-            comment="volatility_building"
+            comment="normal_volatility"
         )
 
     # ----------------------
-    # 3️⃣ Healthy Expansion
+    # EXPANSION (BEST ZONE)
     # ----------------------
     if move_pct_atr < 1.8:
-        score = 1.1
-        comment = "healthy_expansion"
-
-        # ATR rising confirmation (optional)
-        if atr_history and len(atr_history) >= 5:
-            if atr_history[-1] > atr_history[-3]:
-                score += 0.2
-                comment += "_atr_rising"
-
         return VolatilityContext(
             state="EXPANDING",
-            score=min(score, 1.5),
+            score=0.8,
             atr=round(atr_value, 6),
             move_pct_atr=round(move_pct_atr, 2),
-            comment=comment
+            comment="expansion"
         )
 
     # ----------------------
-    # 4️⃣ Spike / Exhaustion
+    # HIGH / SPIKE
     # ----------------------
     return VolatilityContext(
-        state="EXHAUSTION",
-        score=-1.0,
+        state="HIGH",
+        score=-0.2,   # small caution only (not blocking)
         atr=round(atr_value, 6),
         move_pct_atr=round(move_pct_atr, 2),
-        comment="volatility_spike_risk"
+        comment="high_volatility"
     )
 
 
 # =========================
-# Backward Compatibility
+# LEGACY SUPPORT
 # =========================
 
 def volatility_breakout_confirmed(
@@ -150,9 +126,6 @@ def volatility_breakout_confirmed(
     atr_value: Optional[float],
     atr_multiplier: float = 1.1
 ) -> bool:
-    """
-    STRICT legacy confirmation.
-    """
     if atr_value is None:
         return False
     return abs(current_move) >= atr_value * atr_multiplier
